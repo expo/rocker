@@ -76,6 +76,13 @@ func RegistryListTags(image *imagename.ImageName, auth *docker.AuthConfiguration
 		}
 	}
 
+	var token string
+
+	log.Debugf("Authenticating with registry...")
+	if token, err = ping(registry, name, regAuth); err != nil {
+		return nil, err
+	}
+
 	var (
 		tg  = tags{}
 		url = fmt.Sprintf("https://%s/v2/%s/tags/list?page_size=9999&page=1", registry, name)
@@ -83,7 +90,7 @@ func RegistryListTags(image *imagename.ImageName, auth *docker.AuthConfiguration
 
 	log.Debugf("Listing image tags from the remote registry %s", url)
 
-	if err := registryGet(url, regAuth, &tg); err != nil {
+	if err := registryGet(url, token, &tg); err != nil {
 		return nil, err
 	}
 
@@ -99,8 +106,38 @@ func RegistryListTags(image *imagename.ImageName, auth *docker.AuthConfiguration
 	return
 }
 
+func ping(registry string, imageName string, auth docker.AuthConfiguration) (token string, err error) {
+	var (
+		client = &http.Client{}
+		req    *http.Request
+		res    *http.Response
+	)
+
+	var b *bearer
+
+	uri := fmt.Sprintf("https://%s/v2/", registry)
+
+	if req, err = http.NewRequest("GET", uri, nil); err != nil {
+		return "", err
+	}
+
+	if res, err = client.Do(req); err != nil {
+		return "", fmt.Errorf("Request to %s failed with %s\n", uri, err)
+	}
+	defer res.Body.Close()
+
+	b = parseBearer(res.Header.Get("Www-Authenticate"))
+
+	token, err = getAuthToken(b, imageName, auth)
+	if err != nil {
+		return "", err
+	}
+
+	return token, nil
+}
+
 // registryGet executes HTTP get to a given registry
-func registryGet(uri string, auth docker.AuthConfiguration, obj interface{}) (err error) {
+func registryGet(uri string, token string, obj interface{}) (err error) {
 	var (
 		client = &http.Client{}
 		req    *http.Request
@@ -112,34 +149,14 @@ func registryGet(uri string, auth docker.AuthConfiguration, obj interface{}) (er
 		return
 	}
 
-	var (
-		b       *bearer
-		authTry bool
-	)
+	req.Header.Add("Authorization", "Bearer "+token)
+	req.Header.Add("Content-Type", "application/json")
+	req.Header.Add("User-Agent", "//containerregistry/client:gcloud.py")
 
-	for {
-		if res, err = client.Do(req); err != nil {
-			return fmt.Errorf("Request to %s failed with %s\n", uri, err)
-		}
-		defer res.Body.Close()
-
-		b = parseBearer(res.Header.Get("Www-Authenticate"))
-		log.Debugf("Got HTTP %d for %s; tried auth: %t; has Bearer: %t, auth username: %q", res.StatusCode, uri, authTry, b != nil, auth.Username)
-
-		if res.StatusCode == 401 && !authTry && b != nil {
-			token, err := getAuthToken(b, auth)
-			if err != nil {
-				return fmt.Errorf("Failed to authenticate to registry %s, error: %s", uri, err)
-			}
-
-			req.Header.Add("Authorization", "Bearer "+token)
-
-			authTry = true
-			continue
-		}
-
-		break
+	if res, err = client.Do(req); err != nil {
+		return fmt.Errorf("Request to %s failed with %s\n", uri, err)
 	}
+	defer res.Body.Close()
 
 	if res.StatusCode != 200 {
 		// TODO: maybe more descriptive error
@@ -158,7 +175,7 @@ func registryGet(uri string, auth docker.AuthConfiguration, obj interface{}) (er
 	return
 }
 
-func getAuthToken(b *bearer, auth docker.AuthConfiguration) (token string, err error) {
+func getAuthToken(b *bearer, imageName string, auth docker.AuthConfiguration) (token string, err error) {
 	type authRespType struct {
 		Token string
 	}
@@ -180,7 +197,7 @@ func getAuthToken(b *bearer, auth docker.AuthConfiguration) (token string, err e
 	// Add query params to the ream uri
 	q := uri.Query()
 	q.Set("service", b.Service)
-	q.Set("scope", b.Scope)
+	q.Set("scope", "repository:"+imageName+":pull")
 	uri.RawQuery = q.Encode()
 
 	if req, err = http.NewRequest("GET", uri.String(), nil); err != nil {
@@ -190,6 +207,9 @@ func getAuthToken(b *bearer, auth docker.AuthConfiguration) (token string, err e
 	if auth.Username != "" {
 		req.SetBasicAuth(auth.Username, auth.Password)
 	}
+
+	req.Header.Add("Content-Type", "application/json")
+	req.Header.Add("User-Agent", "//containerregistry/client:gcloud.py")
 
 	log.Debugf("Getting auth token from %s", uri)
 
@@ -211,6 +231,8 @@ func getAuthToken(b *bearer, auth docker.AuthConfiguration) (token string, err e
 		return "", fmt.Errorf("Response from %s cannot be unmarshalled due to error %s, response: %s\n",
 			uri, err, body)
 	}
+
+	log.Debugf("%s", authResp)
 
 	return authResp.Token, nil
 }
