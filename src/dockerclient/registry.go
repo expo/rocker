@@ -232,8 +232,6 @@ func getAuthToken(b *bearer, imageName string, auth docker.AuthConfiguration) (t
 			uri, err, body)
 	}
 
-	log.Debugf("%s", authResp)
-
 	return authResp.Token, nil
 }
 
