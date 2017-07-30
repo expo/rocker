@@ -459,7 +459,7 @@ func initAuth(c *cli.Context) (auth *docker.AuthConfigurations) {
 			userPass := strings.Split(authParam, ":")
 			auth = &docker.AuthConfigurations{
 				Configs: map[string]docker.AuthConfiguration{
-					"*": docker.AuthConfiguration{
+					"https://gcr.io": docker.AuthConfiguration{
 						Username: userPass[0],
 						Password: userPass[1],
 					},
